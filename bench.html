@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<meta charset=utf-8>
+<title>4090 10s MAX</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}
+canvas{width:100vw;height:100vh;display:block}</style>
+<canvas id=c></canvas>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', {antialias:false, preserveDrawingBuffer:false});
+canvas.width = window.innerWidth * devicePixelRatio;
+canvas.height = window.innerHeight * devicePixelRatio;
+
+const vs = `
+attribute vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+// 故意重 fragment 计算，吃 ALU
+const fs = `
+precision highp float;
+uniform float u_time;
+uniform vec2 u_res;
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res * 2.0 - 1.0;
+  float t = u_time;
+  float v = 0.0;
+  for (int i = 0; i < 64; i++) {
+    float fi = float(i);
+    v += sin(uv.x*10.0 + t*fi*0.3) * cos(uv.y*10.0 + t*fi*0.27);
+  }
+  v = sin(v * 3.0);
+  gl_FragColor = vec4(vec3(v*0.5+0.5), 1.0);
+}
+`;
+
+const prog = gl.createProgram();
+[gl.VERTEX_SHADER, gl.FRAGMENT_SHADER].forEach((type, i) => {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, i ? fs : vs);
+  gl.compileShader(s);
+  gl.attachShader(prog, s);
+});
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+const uTime = gl.getUniformLocation(prog, 'u_time');
+const uRes = gl.getUniformLocation(prog, 'u_res');
+
+// 大顶点池（上限）
+const MAX_TRI = 2000000;
+const data = new Float32Array(MAX_TRI * 3 * 2);
+for (let i = 0; i < MAX_TRI * 3; i++) {
+  data[i*2] = Math.random()*2-1;
+  data[i*2+1] = Math.random()*2-1;
+}
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+let triCount = 3000;
+let t = 0;
+
+function loop() {
+  t += 0.016;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+
+  // 指数爆炸：*1.25 每帧
+  triCount = Math.min(MAX_TRI, Math.floor(triCount * 1.25));
+  const verts = triCount * 3;
+
+  // 多重 draw 吃 draw call / 管线提交
+  const passes = 6;
+  for (let p = 0; p < passes; p++) {
+    gl.drawArrays(gl.TRIANGLES, 0, verts);
+  }
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
