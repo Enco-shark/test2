@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>无限分形宇宙（Menger + Mandelbulb）</title>
+<style>
+html, body { margin:0; background:#000; overflow:hidden; color:#0f0; font-family:monospace; }
+canvas { display:block; }
+#btn { position:fixed; left:0; top:0; }
+#config { position:fixed; left:0; top:30px; display:none; background:#111; padding:6px; }
+textarea { background:#000; color:#0f0; border:1px solid #0f0; }
+</style>
+</head>
+<body>
+
+<canvas id="c1" width="1024" height="1024"></canvas>
+
+<button id="btn">CONFIG</button>
+<div id="config">
+<textarea id="kernel" cols="70" rows="22"></textarea><br>
+<button id="apply">APPLY</button>
+<button id="cancel">CANCEL</button>
+</div>
+
+<script>
+/* ================= 基础变量 ================= */
+var canvas, gl;
+var glposition, glright, glforward, glup, glorigin, glx, gly, gllen;
+var cx, cy;
+var len = 1.6;
+var ang1 = 2.8, ang2 = 0.4;
+var cenx = 0.0, ceny = 0.0, cenz = 0.0;
+var mx = 0, my = 0, ml = 0, mr = 0;
+var KERNEL = `
+/* ========== 工具 ========== */
+float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+vec3 opRepeat(vec3 p, vec3 c) {
+    return mod(p + 0.5 * c, c) - 0.5 * c;
+}
+
+/* ========== Menger ========== */
+float sdMenger(vec3 p, float s) {
+    vec3 ap = abs(p);
+    float mc = max(ap.x, max(ap.y, ap.z));
+    float scale = s;
+    for (int i = 0; i < 4; i++) {
+        vec3 a = mod(p * scale, 2.0) - 1.0;
+        scale *= 3.0;
+        float da = max(abs(a.x), max(abs(a.y), abs(a.z))) - 1.0 / scale;
+        mc = min(mc, da);
+    }
+    return mc;
+}
+
+/* ========== Mandelbulb ========== */
+float mandelbulb(vec3 p) {
+    vec3 w = p;
+    float m = dot(w, w);
+    float dz = 1.0;
+    for (int i = 0; i < 4; i++) {
+        dz = 8.0 * pow(m, 3.5) * dz + 1.0;
+        float r = length(w);
+        float b = 8.0 * acos(w.y / r);
+        float a = 8.0 * atan(w.x, w.z);
+        w = p + pow(r, 8.0) * vec3(sin(b)*sin(a), cos(b), sin(b)*cos(a));
+        m = dot(w, w);
+        if (m > 256.0) break;
+    }
+    return 0.25 * log(m) * sqrt(m) / dz;
+}
+
+/* ========== 主场景 ========== */
+float map(vec3 p) {
+    p += sin(p * 2.5) * 0.2; // 空间扭曲
+    vec3 q = opRepeat(p + vec3(6.0), vec3(12.0));
+    float menger = sdMenger(q, 1.0);
+    float bulb = mandelbulb(p * 0.8) * 0.8;
+    return smin(menger, bulb, 0.6);
+}
+`;
+
+/* ================= WebGL 初始化 ================= */
+window.onload = function () {
+    canvas = document.getElementById("c1");
+    gl = canvas.getContext("webgl");
+
+    const VSHADER = `
+    attribute vec4 position;
+    varying vec3 dir;
+    uniform vec3 right, forward, up;
+    uniform float x, y;
+    void main() {
+        gl_Position = position;
+        dir = normalize(forward + right * position.x * x + up * position.y * y);
+    }`;
+
+    const FSHADER = `
+    precision highp float;
+    varying vec3 dir;
+    uniform vec3 origin, right, forward, up;
+    uniform float len;
+    float kernal(vec3 p);
+    void main() {
+        vec3 ro = origin;
+        vec3 rd = dir;
+        float t = 0.0;
+        for (int i = 0; i < 200; i++) {
+            vec3 p = ro + rd * t;
+            float d = kernal(p);
+            if (abs(d) < 0.001) {
+                gl_FragColor = vec4(vec3(1.0 - t * 0.1), 1.0);
+                return;
+            }
+            t += d;
+            if (t > 20.0) break;
+        }
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    }` + KERNEL;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(vs, VSHADER);
+    gl.shaderSource(fs, FSHADER);
+    gl.compileShader(vs);
+    gl.compileShader(fs);
+
+    const program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    glposition = gl.getAttribLocation(program, "position");
+    glright = gl.getUniformLocation(program, "right");
+    glforward = gl.getUniformLocation(program, "forward");
+    glup = gl.getUniformLocation(program, "up");
+    glorigin = gl.getUniformLocation(program, "origin");
+    glx = gl.getUniformLocation(program, "x");
+    gly = gl.getUniformLocation(program, "y");
+    gllen = gl.getUniformLocation(program, "len");
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1,-1,0,  1,-1,0,  1,1,0,
+        -1,-1,0,  1,1,0, -1,1,0
+    ]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(glposition);
+    gl.vertexAttribPointer(glposition, 3, gl.FLOAT, false, 0, 0);
+
+    resize();
+    requestAnimationFrame(loop);
+};
+
+/* ================= 渲染循环 ================= */
+function loop() {
+    ang1 += 0.003;
+    gl.uniform1f(glx, cx * 2 / (cx + cy));
+    gl.uniform1f(gly, cy * 2 / (cx + cy));
+    gl.uniform1f(gllen, len);
+    gl.uniform3f(glorigin,
+        len * Math.cos(ang1) * Math.cos(ang2) + cenx,
+        len * Math.sin(ang2) + ceny,
+        len * Math.sin(ang1) * Math.cos(ang2) + cenz
+    );
+    gl.uniform3f(glright, Math.sin(ang1), 0, -Math.cos(ang1));
+    gl.uniform3f(glup,
+        -Math.sin(ang2)*Math.cos(ang1),
+        Math.cos(ang2),
+        -Math.sin(ang2)*Math.sin(ang1)
+    );
+    gl.uniform3f(glforward,
+        -Math.cos(ang1)*Math.cos(ang2),
+        -Math.sin(ang2),
+        -Math.sin(ang1)*Math.cos(ang2)
+    );
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    requestAnimationFrame(loop);
+}
+
+/* ================= 窗口大小 ================= */
+function resize() {
+    cx = cy = Math.min(window.innerWidth, window.innerHeight);
+    canvas.style.width = cx + "px";
+    canvas.style.height = cy + "px";
+}
+window.onresize = resize;
+
+/* ================= UI ================= */
+document.getElementById("btn").onclick = () => {
+    const cfg = document.getElementById("config");
+    cfg.style.display = cfg.style.display === "none" ? "block" : "none";
+    document.getElementById("kernel").value = KERNEL;
+};
+document.getElementById("apply").onclick = () => location.reload();
+</script>
+</body>
+</html>
